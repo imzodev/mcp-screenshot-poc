@@ -1,5 +1,5 @@
 // src/utils/gemini.ts
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, Content, Part } from "@google/generative-ai";
 import 'dotenv/config';
 
 // Initialize the Gemini API
@@ -16,6 +16,23 @@ const genAI = new GoogleGenerativeAI(apiKey || "");
 
 // Get the model
 const model = genAI.getGenerativeModel({ model: modelName });
+
+// Types for chat messages
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp?: Date;
+  isScreenshot?: boolean;
+  screenshotUrl?: string;
+  screenshotBase64?: string;
+}
+
+export interface ChatSession {
+  id: string;
+  messages: ChatMessage[];
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 /**
  * Extract a URL from a natural language prompt
@@ -72,5 +89,87 @@ export async function extractUrlFromPrompt(prompt: string): Promise<string | nul
   } catch (error) {
     console.error("Error extracting URL from prompt:", error);
     return null;
+  }
+}
+
+/**
+ * Detect if a message contains a screenshot intent
+ * @param message The user message to analyze
+ * @returns True if the message contains a screenshot intent, false otherwise
+ */
+export async function detectScreenshotIntent(message: string): Promise<boolean> {
+  try {
+    const systemPrompt = `
+      You are an intent detection system. Your task is to determine if the user is asking to take a screenshot of a website.
+      Respond with "YES" if the user is asking for a screenshot of a website, or "NO" if not.
+      Only respond with "YES" or "NO", nothing else.
+    `;
+
+    const result = await model.generateContent({
+      contents: [
+        { role: "user", parts: [{ text: systemPrompt }] },
+        { role: "user", parts: [{ text: message }] }
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 10,
+      },
+    });
+
+    const text = result.response.text().trim().toUpperCase();
+    return text === "YES";
+  } catch (error) {
+    console.error("Error detecting screenshot intent:", error);
+    return false;
+  }
+}
+
+/**
+ * Convert chat messages to the format expected by the Gemini API
+ */
+function convertMessagesToGeminiFormat(messages: ChatMessage[]): Content[] {
+  // Filter out system messages as Gemini doesn't support them
+  return messages
+    .filter(message => message.role !== 'system')
+    .map(message => ({
+      role: message.role === 'assistant' ? 'model' : message.role,
+      parts: [{ text: message.content }] as Part[],
+    }));
+}
+
+/**
+ * Generate a response to a chat message
+ * @param messages The chat history
+ * @returns The assistant's response
+ */
+export async function generateChatResponse(messages: ChatMessage[]): Promise<string> {
+  try {
+    // Create a new array with only user and assistant messages
+    // Gemini only supports 'user' and 'model' roles
+    const validMessages = messages.filter(msg => msg.role === 'user' || msg.role === 'assistant');
+
+    // If this is the first user message, add context about the assistant's capabilities
+    if (validMessages.length === 1 && validMessages[0].role === 'user') {
+      // For the first message, we'll prepend instructions to the user's message
+      const originalContent = validMessages[0].content;
+      validMessages[0].content = `Context: You are a helpful assistant that can take screenshots of websites when asked. Be conversational and friendly. If I ask about taking a screenshot, let me know you can help with that.
+
+User message: ${originalContent}`;
+    }
+
+    const geminiMessages = convertMessagesToGeminiFormat(validMessages);
+
+    const result = await model.generateContent({
+      contents: geminiMessages,
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 800,
+      },
+    });
+
+    return result.response.text();
+  } catch (error) {
+    console.error("Error generating chat response:", error);
+    return "I'm sorry, I encountered an error while processing your message. Please try again.";
   }
 }
