@@ -1,10 +1,10 @@
 // src/utils/gemini.ts
-import { GoogleGenerativeAI, Content, Part } from "@google/generative-ai";
+import { GoogleGenerativeAI, FunctionDeclaration, SchemaType } from "@google/generative-ai";
 import 'dotenv/config';
 
 // Initialize the Gemini API
 const apiKey = process.env.GEMINI_API_KEY;
-const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+const modelName = process.env.GEMINI_MODEL || 'gemini-pro';
 
 if (!apiKey) {
   console.error("GEMINI_API_KEY is not set in environment variables");
@@ -13,9 +13,6 @@ if (!apiKey) {
 console.log(`Using Gemini model: ${modelName}`);
 
 const genAI = new GoogleGenerativeAI(apiKey || "");
-
-// Get the model
-const model = genAI.getGenerativeModel({ model: modelName });
 
 // Types for chat messages
 export interface ChatMessage {
@@ -34,6 +31,31 @@ export interface ChatSession {
   updatedAt: Date;
 }
 
+// Define the screenshot function declaration
+export const takeScreenshotFunctionDeclaration: FunctionDeclaration = {
+  name: 'take_screenshot',
+  description: 'Takes a screenshot of a specified website URL.',
+  parameters: {
+    type: SchemaType.OBJECT,
+    properties: {
+      url: {
+        type: SchemaType.STRING,
+        description: 'The URL of the website to capture a screenshot of. Should include http:// or https:// protocol.',
+      },
+    },
+    required: ['url'],
+  },
+};
+
+// Define the response type for function calls
+export interface FunctionCallResult {
+  text: string;
+  functionCall?: {
+    name: string;
+    args: any;
+  };
+}
+
 /**
  * Extract a URL from a natural language prompt
  * @param prompt The natural language prompt from the user
@@ -50,8 +72,11 @@ export async function extractUrlFromPrompt(prompt: string): Promise<string | nul
       Only return the URL, nothing else.
     `;
 
+    // Get a basic model without function calling
+    const basicModel = genAI.getGenerativeModel({ model: modelName });
+
     // Generate content with the model
-    const result = await model.generateContent({
+    const result = await basicModel.generateContent({
       contents: [
         { role: "user", parts: [{ text: systemPrompt }] },
         { role: "user", parts: [{ text: prompt }] }
@@ -93,83 +118,66 @@ export async function extractUrlFromPrompt(prompt: string): Promise<string | nul
 }
 
 /**
- * Detect if a message contains a screenshot intent
- * @param message The user message to analyze
- * @returns True if the message contains a screenshot intent, false otherwise
- */
-export async function detectScreenshotIntent(message: string): Promise<boolean> {
-  try {
-    const systemPrompt = `
-      You are an intent detection system. Your task is to determine if the user is asking to take a screenshot of a website.
-      Respond with "YES" if the user is asking for a screenshot of a website, or "NO" if not.
-      Only respond with "YES" or "NO", nothing else.
-    `;
-
-    const result = await model.generateContent({
-      contents: [
-        { role: "user", parts: [{ text: systemPrompt }] },
-        { role: "user", parts: [{ text: message }] }
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 10,
-      },
-    });
-
-    const text = result.response.text().trim().toUpperCase();
-    return text === "YES";
-  } catch (error) {
-    console.error("Error detecting screenshot intent:", error);
-    return false;
-  }
-}
-
-/**
- * Convert chat messages to the format expected by the Gemini API
- */
-function convertMessagesToGeminiFormat(messages: ChatMessage[]): Content[] {
-  // Filter out system messages as Gemini doesn't support them
-  return messages
-    .filter(message => message.role !== 'system')
-    .map(message => ({
-      role: message.role === 'assistant' ? 'model' : message.role,
-      parts: [{ text: message.content }] as Part[],
-    }));
-}
-
-/**
- * Generate a response to a chat message
+ * Generate a response to a chat message with function calling
  * @param messages The chat history
- * @returns The assistant's response
+ * @returns The assistant's response and any function calls
  */
-export async function generateChatResponse(messages: ChatMessage[]): Promise<string> {
+export async function generateChatResponse(messages: ChatMessage[]): Promise<FunctionCallResult> {
   try {
     // Create a new array with only user and assistant messages
     // Gemini only supports 'user' and 'model' roles
     const validMessages = messages.filter(msg => msg.role === 'user' || msg.role === 'assistant');
 
-    // If this is the first user message, add context about the assistant's capabilities
-    if (validMessages.length === 1 && validMessages[0].role === 'user') {
-      // For the first message, we'll prepend instructions to the user's message
-      const originalContent = validMessages[0].content;
-      validMessages[0].content = `Context: You are a helpful assistant that can take screenshots of websites when asked. Be conversational and friendly. If I ask about taking a screenshot, let me know you can help with that.
+    // Convert messages to the format expected by Gemini
+    const geminiMessages = validMessages.map(msg => ({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }],
+    }));
 
-User message: ${originalContent}`;
-    }
-
-    const geminiMessages = convertMessagesToGeminiFormat(validMessages);
-
-    const result = await model.generateContent({
-      contents: geminiMessages,
+    // Create a model with function calling capabilities
+    const modelWithFunctions = genAI.getGenerativeModel({
+      model: modelName,
       generationConfig: {
         temperature: 0.7,
         maxOutputTokens: 800,
       },
+      tools: [{
+        functionDeclarations: [takeScreenshotFunctionDeclaration]
+      }],
     });
 
-    return result.response.text();
+    // Generate content with the model
+    const result = await modelWithFunctions.generateContent({
+      contents: geminiMessages,
+    });
+
+    const response = result.response;
+    const responseText = response.text();
+
+    // Check if there's a function call in the response
+    try {
+      const functionCalls = response.functionCalls();
+      if (functionCalls && functionCalls.length > 0) {
+        const functionCall = functionCalls[0];
+        return {
+          text: responseText,
+          functionCall: {
+            name: functionCall.name,
+            args: functionCall.args,
+          },
+        };
+      }
+    } catch (error) {
+      console.error("Error checking function calls:", error);
+      // Continue with normal response if function call check fails
+    }
+
+    // Return just the text if no function call
+    return { text: responseText };
   } catch (error) {
     console.error("Error generating chat response:", error);
-    return "I'm sorry, I encountered an error while processing your message. Please try again.";
+    return {
+      text: "I'm sorry, I encountered an error while processing your message. Please try again."
+    };
   }
 }

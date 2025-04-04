@@ -5,8 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   ChatMessage,
   ChatSession,
-  detectScreenshotIntent,
-  extractUrlFromPrompt,
+  FunctionCallResult,
   generateChatResponse
 } from '@/utils/gemini';
 
@@ -48,19 +47,23 @@ export async function POST(req: NextRequest) {
     };
     session.messages.push(userMessage);
 
-    // Check if the message contains a screenshot intent
-    const isScreenshotIntent = await detectScreenshotIntent(message);
+    // Generate a response with potential function calls
+    const response: FunctionCallResult = await generateChatResponse(session.messages);
 
     let assistantMessage: ChatMessage;
     let screenshotData: string | null = null;
     let extractedUrl: string | null = null;
+    let isScreenshotIntent = false;
 
-    if (isScreenshotIntent) {
-      // Extract URL from the message
-      extractedUrl = await extractUrlFromPrompt(message);
+    // Check if the model wants to call the screenshot function
+    if (response.functionCall && response.functionCall.name === 'take_screenshot') {
+      isScreenshotIntent = true;
+      extractedUrl = response.functionCall.args.url;
 
       if (extractedUrl) {
         try {
+          console.log(`Taking screenshot of ${extractedUrl} via function call`);
+
           // Call the screenshot API
           const screenshotResponse = await fetch(new URL('/api/screenshot', req.url), {
             method: 'POST',
@@ -78,7 +81,7 @@ export async function POST(req: NextRequest) {
             // Create assistant message with screenshot
             assistantMessage = {
               role: 'assistant',
-              content: `I've taken a screenshot of ${extractedUrl} for you.`,
+              content: response.text,
               timestamp: new Date(),
               isScreenshot: true,
               screenshotUrl: extractedUrl,
@@ -101,19 +104,18 @@ export async function POST(req: NextRequest) {
           };
         }
       } else {
-        // Could not extract URL
+        // Invalid URL from function call
         assistantMessage = {
           role: 'assistant',
-          content: "I'd be happy to take a screenshot for you, but I couldn't identify a specific website URL in your request. Could you please provide the URL of the website you'd like me to capture?",
+          content: "I'd like to take a screenshot, but I couldn't process the URL. Could you please provide a valid URL?",
           timestamp: new Date(),
         };
       }
     } else {
-      // Regular chat message - generate a response
-      const responseText = await generateChatResponse(session.messages);
+      // Regular chat message - use the generated response
       assistantMessage = {
         role: 'assistant',
-        content: responseText,
+        content: response.text,
         timestamp: new Date(),
       };
     }
