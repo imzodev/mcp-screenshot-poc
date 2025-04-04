@@ -37,7 +37,7 @@ export default function HomePage() {
     setMessages([
       {
         role: 'assistant',
-        content: 'Hello! I\'m your AI assistant. I can help you take screenshots of websites. Just ask me something like "Take a screenshot of example.com" or "Show me what bbc.co.uk looks like right now".',
+        content: 'Hello! I\'m your AI assistant. I can help you take screenshots of websites. Just ask me something like "Take a screenshot of example.com" or "Show me what the BBC website looks like right now", and I\'ll automatically capture and display the screenshot for you.',
         timestamp: new Date(),
       },
     ]);

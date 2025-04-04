@@ -1,5 +1,5 @@
 // src/utils/gemini.ts
-import { GoogleGenerativeAI, FunctionDeclaration, SchemaType } from "@google/generative-ai";
+import { GoogleGenerativeAI, FunctionDeclaration, SchemaType, FunctionCallingMode } from "@google/generative-ai";
 import 'dotenv/config';
 
 // Initialize the Gemini API
@@ -34,13 +34,13 @@ export interface ChatSession {
 // Define the screenshot function declaration
 export const takeScreenshotFunctionDeclaration: FunctionDeclaration = {
   name: 'take_screenshot',
-  description: 'Takes a screenshot of a specified website URL.',
+  description: 'Takes a screenshot of a specified website URL. Use this function when the user asks to see what a website looks like or requests a screenshot of a website.',
   parameters: {
     type: SchemaType.OBJECT,
     properties: {
       url: {
         type: SchemaType.STRING,
-        description: 'The URL of the website to capture a screenshot of. Should include http:// or https:// protocol.',
+        description: 'The URL of the website to capture a screenshot of. If the user mentions a website name without a full URL (like "BBC", "CNN", etc.), construct the URL by adding "https://www." prefix and the appropriate domain suffix (usually ".com", ".org", or country code like ".co.uk" for BBC).',
       },
     },
     required: ['url'],
@@ -56,66 +56,6 @@ export interface FunctionCallResult {
   };
 }
 
-/**
- * Extract a URL from a natural language prompt
- * @param prompt The natural language prompt from the user
- * @returns The extracted URL or null if no URL was found
- */
-export async function extractUrlFromPrompt(prompt: string): Promise<string | null> {
-  try {
-    // Create a system prompt to guide Gemini
-    const systemPrompt = `
-      You are a helpful assistant that extracts URLs from user requests.
-      If the user asks to take a screenshot of a website, extract the URL.
-      If the URL doesn't include a protocol (http:// or https://), add https://.
-      If no URL is found, respond with "NO_URL_FOUND".
-      Only return the URL, nothing else.
-    `;
-
-    // Get a basic model without function calling
-    const basicModel = genAI.getGenerativeModel({ model: modelName });
-
-    // Generate content with the model
-    const result = await basicModel.generateContent({
-      contents: [
-        { role: "user", parts: [{ text: systemPrompt }] },
-        { role: "user", parts: [{ text: prompt }] }
-      ],
-      generationConfig: {
-        temperature: 0.1, // Low temperature for more deterministic results
-        maxOutputTokens: 100,
-      },
-    });
-
-    const text = result.response.text().trim();
-
-    // Check if the response indicates no URL was found
-    if (text === "NO_URL_FOUND") {
-      return null;
-    }
-
-    // Basic URL validation
-    try {
-      // Try to create a URL object to validate
-      const url = new URL(text);
-      return url.toString();
-    } catch (error) {
-      // If it's not a valid URL with protocol, try adding https://
-      if (!text.startsWith('http://') && !text.startsWith('https://')) {
-        try {
-          const urlWithProtocol = new URL(`https://${text}`);
-          return urlWithProtocol.toString();
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }
-  } catch (error) {
-    console.error("Error extracting URL from prompt:", error);
-    return null;
-  }
-}
 
 /**
  * Generate a response to a chat message with function calling
@@ -144,6 +84,13 @@ export async function generateChatResponse(messages: ChatMessage[]): Promise<Fun
       tools: [{
         functionDeclarations: [takeScreenshotFunctionDeclaration]
       }],
+      // Set tool config to encourage function calling
+      toolConfig: {
+        functionCallingConfig: {
+          // Use AUTO to let the model decide when to call functions
+          mode: FunctionCallingMode.AUTO,
+        },
+      },
     });
 
     // Generate content with the model
