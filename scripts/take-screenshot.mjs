@@ -52,7 +52,7 @@ async function run() {
     // Take screenshot - assuming 'raw: true' gives base64 PNG based on docs
     // The exact response structure needs careful checking. Let's assume it's in result.content[0].text or similar
      const result = await client.callTool({
-       name: 'browser_screenshot',
+       name: 'browser_screen_capture',
        arguments: { raw: true }, // Request raw PNG data
      });
     console.error('Screenshot taken. Processing result...'); // Log to stderr
