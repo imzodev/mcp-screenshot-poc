@@ -21,7 +21,12 @@ async function run() {
   // We add --headless for potentially running without a GUI visible
   const transport = new StdioClientTransport({
     command: 'npx',
-    args: ['@playwright/mcp@latest', '--vision', '--headless'], // Add other flags like --browser if needed
+    // --no-sandbox is often needed for environments like Docker or CI because we need to run without being a root user
+    // --isolated is useful for running in a clean environment
+    // --browser can be set to 'chrome', 'firefox', 'webkit'
+    // --headless is useful for running without a GUI
+    // --vision is required for screenshot capabilities
+    args: ['@playwright/mcp@latest', '--vision', '--headless', '--browser', 'chrome', '--isolated', '--no-sandbox'], // Add other flags like --browser if needed
   });
 
   const client = new Client(
