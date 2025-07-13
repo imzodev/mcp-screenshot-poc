@@ -24,20 +24,23 @@ export async function POST(req: NextRequest) {
     const { message, sessionId } = validatedData;
 
     // Get or create a chat session
-    let session: ChatSession;
-    if (sessionId && typeof sessionId === 'string' && chatSessions.has(sessionId)) {
-      session = chatSessions.get(sessionId)!;
-      session.updatedAt = new Date();
-    } else {
-      const newSessionId = uuidv4();
-      session = {
-        id: newSessionId,
-        messages: [],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      chatSessions.set(newSessionId, session);
-    }
+    const session: ChatSession = sessionId && typeof sessionId === 'string' && chatSessions.has(sessionId)
+      ? (() => {
+          const existingSession = chatSessions.get(sessionId)!;
+          existingSession.updatedAt = new Date();
+          return existingSession;
+        })()
+      : (() => {
+          const newSessionId = uuidv4();
+          const newSession = {
+            id: newSessionId,
+            messages: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          chatSessions.set(newSessionId, newSession);
+          return newSession;
+        })();
 
     // Add user message to the session
     const userMessage: ChatMessage = {
@@ -50,17 +53,12 @@ export async function POST(req: NextRequest) {
     // Generate a response with potential function calls
     const response: FunctionCallResult = await generateChatResponse(session.messages);
 
-    let assistantMessage: ChatMessage;
-    let screenshotData: string | null = null;
-    let extractedUrl: string | null = null;
-    let isScreenshotIntent = false;
+    const extractedUrl: string | null = response.functionCall?.name === 'take_screenshot' ? response.functionCall.args.url : null;
+    const isScreenshotIntent = response.functionCall?.name === 'take_screenshot';
 
     // Check if the model wants to call the screenshot function
-    if (response.functionCall && response.functionCall.name === 'take_screenshot') {
-      isScreenshotIntent = true;
-      extractedUrl = response.functionCall.args.url;
-
-      if (extractedUrl) {
+    const assistantMessage: ChatMessage = await (async () => {
+      if (isScreenshotIntent && extractedUrl) {
         try {
           console.log(`Taking screenshot of ${extractedUrl} via function call`);
 
@@ -76,49 +74,50 @@ export async function POST(req: NextRequest) {
           const screenshotResult = await screenshotResponse.json();
 
           if (screenshotResult.success) {
-            screenshotData = screenshotResult.base64Data;
+            const finalScreenshotData = screenshotResult.base64Data;
 
             // Create assistant message with screenshot
-            assistantMessage = {
+            return {
               role: 'assistant',
               content: response.text,
               timestamp: new Date(),
               isScreenshot: true,
-              screenshotUrl: extractedUrl,
-              screenshotBase64: screenshotData,
-            };
+              screenshotUrl: extractedUrl || undefined,
+              screenshotBase64: finalScreenshotData,
+            } as ChatMessage;
           } else {
             // Screenshot failed
-            assistantMessage = {
+            return {
               role: 'assistant',
               content: `I tried to take a screenshot of ${extractedUrl}, but encountered an error: ${screenshotResult.error}`,
               timestamp: new Date(),
-            };
+            } as ChatMessage;
           }
-        } catch (error: any) {
+        } catch (error) {
           console.error('Screenshot API Error:', error);
-          assistantMessage = {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          return {
             role: 'assistant',
-            content: `I tried to take a screenshot, but encountered an error: ${error.message || 'Unknown error'}`,
+            content: `I tried to take a screenshot, but encountered an error: ${errorMessage}`,
             timestamp: new Date(),
-          };
+          } as ChatMessage;
         }
-      } else {
+      } else if (isScreenshotIntent) {
         // Invalid URL from function call
-        assistantMessage = {
+        return {
           role: 'assistant',
           content: "I'd like to take a screenshot, but I couldn't process the URL. Could you please provide a valid URL?",
           timestamp: new Date(),
-        };
+        } as ChatMessage;
+      } else {
+        // Regular chat message - use the generated response
+        return {
+          role: 'assistant',
+          content: response.text,
+          timestamp: new Date(),
+        } as ChatMessage;
       }
-    } else {
-      // Regular chat message - use the generated response
-      assistantMessage = {
-        role: 'assistant',
-        content: response.text,
-        timestamp: new Date(),
-      };
-    }
+    })();
 
     // Add assistant message to the session
     session.messages.push(assistantMessage);
@@ -131,11 +130,12 @@ export async function POST(req: NextRequest) {
       extractedUrl,
       isScreenshotIntent,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Chat API Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'An error occurred while processing your message.';
     return NextResponse.json({
       success: false,
-      error: error.message || 'An error occurred while processing your message.'
+      error: errorMessage
     }, { status: 500 });
   }
 }
