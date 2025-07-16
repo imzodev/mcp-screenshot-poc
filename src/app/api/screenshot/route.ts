@@ -9,12 +9,18 @@ const RequestSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  let validatedData;
-  try {
-    const body = await req.json();
-    validatedData = RequestSchema.parse(body);
-  } catch (error) {
-    return NextResponse.json({ success: false, error: 'Invalid request body or URL.' }, { status: 400 });
+  const validatedData = await (async () => {
+    try {
+      const body = await req.json();
+      return RequestSchema.parse(body);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Invalid request body or URL.';
+      throw NextResponse.json({ success: false, error: errorMessage }, { status: 400 });
+    }
+  })();
+
+  if (validatedData instanceof NextResponse) {
+    return validatedData;
   }
 
   const { url } = validatedData;
@@ -26,14 +32,16 @@ export async function POST(req: NextRequest) {
     const command = 'node';
     const args = [scriptPath, url];
 
-    let stdoutData = '';
-    let stderrData = '';
-    let processError: Error | null = null;
+    const state = {
+      stdoutData: '',
+      stderrData: '',
+      processError: null as Error | null
+    };
 
     const child = spawn(command, args);
 
     child.stdout.on('data', (data) => {
-      stdoutData += data.toString();
+      state.stdoutData += data.toString();
     });
 
     child.stderr.on('data', (data) => {
@@ -41,32 +49,32 @@ export async function POST(req: NextRequest) {
         const errLine = data.toString().trim();
         if (errLine) {
            console.error(`MCP Script STDERR: ${errLine}`);
-           stderrData += errLine + '\n';
+           state.stderrData += errLine + '\n';
         }
     });
 
-    child.on('error', (error) => {
+    child.on('error', (error: Error) => {
       console.error(`API: Failed to spawn child process: ${error.message}`);
-      processError = error;
+      state.processError = error;
       // Don't resolve yet, wait for 'close'
     });
 
     child.on('close', (code) => {
       console.log(`API: Child process exited with code ${code}`);
 
-      if (processError) {
+      if (state.processError) {
         // Error during spawning
-         resolve(NextResponse.json({ success: false, error: `Failed to start screenshot process: ${processError.message}` }, { status: 500 }));
+         resolve(NextResponse.json({ success: false, error: `Failed to start screenshot process: ${state.processError.message}` }, { status: 500 }));
       } else if (code !== 0) {
         // Script exited with an error code
-        resolve(NextResponse.json({ success: false, error: `Screenshot script failed (code ${code}). Check server logs. Output: ${stderrData}` }, { status: 500 }));
-      } else if (!stdoutData) {
+        resolve(NextResponse.json({ success: false, error: `Screenshot script failed (code ${code}). Check server logs. Output: ${state.stderrData}` }, { status: 500 }));
+      } else if (!state.stdoutData) {
          // Script succeeded but produced no output
          resolve(NextResponse.json({ success: false, error: 'Screenshot script succeeded but returned no data.' }, { status: 500 }));
       }
       else {
         // Success
-        resolve(NextResponse.json({ success: true, base64Data: stdoutData }));
+        resolve(NextResponse.json({ success: true, base64Data: state.stdoutData }));
       }
     });
   });
